@@ -1,0 +1,458 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include<stdbool.h>
+//custom defined macros for global use
+#define MAX_PROC_STAT_LINE_LENGTH 256
+#define MAX_PROCESSES 100
+ //header files to be included
+
+
+
+//get the process ids for a given pid and collect it onto the an array processIDs
+void getProcessIDs(int* processIDs, pid_t pid) {
+
+    // command to be accepted as a character array to be fed to piped open functed
+    char command[256];
+    //copying the command into command character array using sprintf function
+    snprintf(command, sizeof(command), "pstree -p %d | grep -o '([0-9]\\+)' | grep -o '[0-9]\\+'", pid);
+
+   // accepting the command as a file pointer
+    FILE* commandOutput = popen(command, "r");
+    // if file pointer is null, return
+    if (commandOutput == NULL) {
+        perror("Failed to execute command");
+        return;
+    }
+
+
+  //creating a new buffered input to accept popen File pointer's content
+    char buffer[256];
+    //creating a count to iterative over processID array
+    int count = 0;
+    //iterate over the file pointer fp until it reaches NULL
+    while (fgets(buffer, sizeof(buffer), commandOutput) != NULL && count < MAX_PROCESSES) {
+    	//each line contains pid of its child in top down fashion, we compute the pids by converting them into integers from strings using atoi function and assign it to processID array line-by-line
+        processIDs[count] = atoi(buffer);
+        //incrementing the count
+        count++;
+    }
+
+//closing the file
+
+    pclose(commandOutput);
+}
+
+
+//checking if the given procees belongs to the same process tree or not
+bool isParentIdBelongsToRoot(pid_t pid,pid_t root)
+{
+//get the parent id
+    pid=getParentid(pid);
+    //keep iteratnig until you cross the parent process
+     while(pid>root)
+        {
+            pid=getParentid(pid);            
+        }
+        //if the smaller process equals to the parent process return true else false
+        if(pid==root) return true;
+        else return false;
+
+}
+
+//this function returns the parent id of the given process pid
+pid_t getParentid(pid_t pid)
+{
+//it stores path of of the proc directory
+    char procStatPath[64];
+    snprintf(procStatPath, sizeof(procStatPath), "/proc/%d/stat", pid);
+
+    // Open the proc stat file for reading
+    FILE* statFile = fopen(procStatPath, "r");
+    if (statFile == NULL) {
+        printf("For %d",pid);
+        perror("Failed to open proc stat file for");
+        return 1;
+    }
+
+    // Read the entire line from the proc stat file
+    char statLine[MAX_PROC_STAT_LINE_LENGTH];
+    if (fgets(statLine, sizeof(statLine), statFile) == NULL) {
+        perror("Failed to read proc stat file");
+        fclose(statFile);
+        return 1;
+    }
+
+    // Close the proc stat file
+    fclose(statFile);
+
+    // Tokenize the stat line using space as the delimiter
+    char* token = strtok(statLine, " ");
+    int fieldIndex = 1;  // Start at 1 to skip the process ID field
+
+    // Iterate over the tokens until reaching the desired field (utime)
+    while (token != NULL && fieldIndex < 4) {
+        token = strtok(NULL, " ");
+        //printf("%s",token);
+        fieldIndex++;
+    }
+
+    // Check if the desired field (utime) was found
+    if (token != NULL) {
+        // Convert the token to an integer
+        pid_t ppid = (pid_t)atoi(token);
+        //printf("Process %d parent is: %d\n", pid, ppid);
+        return ppid;
+    } else {
+        printf("Failed to find the desired field (utime) in proc stat file\n");
+    }
+
+    return -1;
+
+}
+/*getSB is a function that receives arrays of process IDs (processIDs and args), along with their respective sizes (pr_sz and arg_sz), and updates an array (sba) by using pointers to it, which is also passed as an argument along with its size (sba_sz).*/
+void getSB(pid_t *sba,pid_t * processIDs,pid_t* args,int sba_sz,int pr_sz,int arg_sz)
+{
+  
+    
+        printf("\n\n\n\n");
+
+    
+        int count=0;
+        //iterate over all the arguments mentioned in  the argument list gieven by the user
+        for(int i=0;i<arg_sz;i++)
+        {
+        //iterate over all the processes in the process tree created for the current running program
+            for(int j=0;j<pr_sz && processIDs[j]!=0;j++)
+            {
+              //keep checkng if the given process is a sibling or not
+                pid_t temp=processIDs[j];
+                //if it is a sibling, store it in a sibling array passed as reference
+                if(temp!=args[i] && getParentid(temp)==getParentid(args[i])) {
+                    printf( "[%d]. %d is sibling of %d \n",count+1,temp,args[i]);
+                    //iterates to next position in the sibling array
+                    sba[count++]=temp;
+                }
+        
+        
+            }
+
+    }
+   // free(args);
+}
+//this function is used to get grandchildren for the given preocess
+void getGC(pid_t * processIDs,pid_t* args,int pr_sz,int arg_sz)
+{
+  
+        printf("\n\n\n\n");
+        
+        //it receives the grandchildern for all the argument mentioned in the argument list
+        for(int i=0;i<arg_sz;i++)
+        {
+        
+         //iterate over the entire process tree for a given user process    
+            for(int j=0;j<pr_sz && processIDs[j]!=0;j++)
+            {
+            //stores the pid_t as a temp variable
+                pid_t temp=processIDs[j];
+                if(temp<=args[i]) {
+                    //printf("\nIgnoring these processes %d\n", temp);
+                    continue;
+                }//if temp becomes is greated than arg[i] then it is child, otherwise parent
+                if(temp>args[i] )
+                { 
+                    //check if the parent's parent is equal t the argument list process passed
+                    int ppid=getParentid(temp);
+                    //printf("%d",ppid);
+                    if(ppid!=-1 && getParentid((pid_t)ppid)==args[i])
+                    {//prints the process that are gcs
+                      printf( "\n %d is grandchild of %d \n",temp,args[i]);
+                     }
+
+                 }
+        
+        
+            }
+
+    }
+    //free(args);
+}
+
+//function prints all the non-descendent processes
+void getND(pid_t * processIDs,pid_t* args,int pr_sz,int arg_sz)
+{
+  
+    
+        printf("\n\n\n\n");
+ 
+ //iterates over the argument list at command prompt       
+        for(int i=0;i<arg_sz;i++)
+        {
+        
+            //
+            for(int j=0;j<pr_sz && processIDs[j]!=0;j++)
+            {
+                pid_t temp=processIDs[j];
+                if(temp<=args[i] || (temp>args[i] && getParentid(temp)==args[i])) {
+                    //printf("\nIgnoring these processes %d\n", temp);
+                    continue;
+                }
+                else{
+                    printf( "\n %d is non direct descendent of %d \n",temp,args[i]);
+                 }
+        
+        
+            }
+
+    }
+    
+}
+
+//this function gets the direct descendents and stores it in an array dda
+void getDD(pid_t *dda,pid_t * processIDs,pid_t* args,int dda_sz,int pr_sz,int arg_sz)
+{
+  
+    
+        printf("\n\n\n\n");
+
+        int count=0;
+        for(int i=0;i<arg_sz;i++)
+        {
+        
+            
+            for(int j=0;j<pr_sz && processIDs[j]!=0;j++)
+            {
+                pid_t temp=processIDs[j];
+                pid_t dp=getParentid(temp);
+                //printf("\n Proccess id for child ===> %d direct parent is: %d\n",(int)temp,(int)dp);
+                //printf("\n temp variable %d > argument variable %d, and (dp) %d == %d(args):%d\n",temp,args[i],dp,args[i]);
+                
+                if(temp>args[i] && dp==args[i]) {
+                    printf( "[%d]. %d is direct descendent of %d \n",count+1,temp,args[i]);
+                    dda[count++]=temp;
+                    //printf("\n%d\n",dda[count]);
+                }
+        
+        
+            }
+
+    }
+    //free(args);
+}
+
+char getStatus(pid_t pid)
+{
+
+    char procStatPath[64];
+    snprintf(procStatPath, sizeof(procStatPath), "/proc/%d/stat", pid);
+
+    // Open the proc stat file for reading
+    FILE* statFile = fopen(procStatPath, "r");
+    if (statFile == NULL) {
+        printf("For %d",pid);
+        perror("Failed to open proc stat file for");
+        return 1;
+    }
+
+    // Read the entire line from the proc stat file
+    char statLine[MAX_PROC_STAT_LINE_LENGTH];
+    if (fgets(statLine, sizeof(statLine), statFile) == NULL) {
+        perror("Failed to read proc stat file");
+        fclose(statFile);
+        return 1;
+    }
+
+    // Close the proc stat file
+    fclose(statFile);
+
+    // Tokenize the stat line using space as the delimiter
+    char* token = strtok(statLine, " ");
+    int fieldIndex = 1;  // Start at 1 to skip the process ID field
+
+    // Iterate over the tokens until reaching the desired field (utime)
+    while (token != NULL && fieldIndex < 3) {
+        token = strtok(NULL, " ");
+        /*if(fieldIndex==2)
+       	 printf("%s",token); */
+        fieldIndex++;
+    }
+
+    // Check if the desired field (utime) was found
+    if (token != NULL) {
+        // Convert the token to an integer
+        char status=(char)*token;
+        
+        if(status=='Z')
+        printf("Process status of process %d  is defunct: %c\n", pid,status);
+        else
+        printf("Process status of process %d  is non-defunct: %c\n", pid,status);
+        return status;
+    } else {
+        printf("Failed to find the desired field (status) in proc stat file\n");
+    }
+
+    return '\0';
+
+}
+//this function prints all the direct descendents that are zombies
+void getZC(pid_t *dda,pid_t * processIDs,pid_t* args,int dda_sz,int pr_sz,int arg_sz)
+{
+    getDD(dda,processIDs,args,dda_sz,pr_sz,arg_sz);  
+    //printf("Print atleast");
+    
+     printf("\n----------------------\n");
+     for(int i=0;i<dda_sz && dda[i]!=0;i++)
+     {
+     	   //printf("[%d]. ",i+1);
+           char status=getStatus(dda[i]); 
+          //printf("status of process %d is %c ",dda[i],status);
+           
+           if(status=='Z')
+           {printf("\n------------------------\n");
+            printf("Process %d is  child  process in defunct state\n",dda[i]);
+           }
+     }
+     return;
+}
+void getSZ(pid_t *sba,pid_t * processIDs,pid_t* args,int sba_sz,int pr_sz,int arg_sz)
+{
+    //collects all sibling process in sibling array
+    getSB(sba,processIDs,args,sba_sz,pr_sz,arg_sz);  
+    
+     printf("\n----------------------\n");
+     //iterates over the sibling array and checks all of them which are defunct
+     for(int i=0;i<sba_sz && sba[i]!=0;i++)
+     {
+     	   //printf("[%d]. ",i+1);
+           char status=getStatus(sba[i]); 
+           //printf("status of process %d is %c ",sba[i],status);
+           if(status=='Z')
+           {
+           printf("\n------------------------\n");
+           //prints the sibling of the defunct state
+            printf("Process %d is the sibling  process in defunct state\n",sba[i]);
+           }
+     }
+     return;
+}
+
+//main function
+int main(int argc,char * argv[]) {
+
+//----------------------engine-code----------------------------------//
+
+//creates direct descendent array
+    int dda[MAX_PROCESSES]={0};
+//creates sibling array    
+    int sba[MAX_PROCESSES]={0};
+//size of direct descendent and sibling array
+    int dda_sz,sba_sz;
+    dda_sz=sba_sz=sizeof(dda)/sizeof(dda[0]);
+    //printf("\n%d\n",dda_sz);
+    
+    //checks if it is an invalid args count or not
+     if (argc < 3 || argc > 8) {
+        printf("Invalid number of arguments.\n");
+        printf("Usage: prcinfo [root_process] [process_id1] [process_id2] ... [process_id(n)] [OPTION]\n");
+        printf("Options:\n");
+        printf("  -nd: List the PIDs of all non-direct descendants of process_id1 (only)\n");
+        printf("  -dd: List the PIDs of all immediate descendants of process_id1\n");
+        printf("  -sb: List the PIDs of all sibling processes of process_id1\n");
+        printf("  -sz: List the PIDs of all sibling processes of process_id1 that are defunct\n");
+        printf("  -gc: List the PIDs of all grandchildren of process_id1\n");
+        printf("  -zz: Print the status of process_id1 (Defunct/Not Defunct)\n");
+        printf("  -zc: List the PIDs of all direct descendants of process_id1 that are currently in the defunct state\n");
+        return 1;
+    }
+
+
+    //pid_t *args=(pid_t *) malloc((argc-2)*sizeof(pid_t));
+    pid_t root=(pid_t)atoi(argv[1]);
+    pid_t processIDs[MAX_PROCESSES] = {0};
+
+	    // for(int i=0;i<argc-2;i++)
+	    // {
+		// args[i]=(pid_t)atoi(argv[i+2]);
+		// //printf("%d\n", args[i]);
+		
+		// }
+	
+	    getProcessIDs(processIDs, root);
+	    int pr_sz=sizeof(processIDs)/sizeof(processIDs[0]);
+        //int arg_sz=argc-2;
+            
+//-----------------------------------------------------------------------//
+ //without an option
+ //printf("%d",argc);
+
+// Get the option
+    if(strchr(argv[argc - 1], '-')==NULL) 
+    {
+
+     for(int i=2;i<argc;i++)
+     {
+        int processId=atoi(argv[i]);
+	if(isParentIdBelongsToRoot(processId,root))
+            {
+                printf("Parent of process %d is %d\n",processId,getParentid(processId));
+            }else
+            {
+		printf("Process %d doesn't belong to the root %d\n",processId,root);
+}
+
+}
+ return 0;
+
+}
+    char* option = argv[argc - 1];
+
+    int arg_sz = argc - 3;
+    pid_t* args = (pid_t*)malloc(arg_sz * sizeof(pid_t));
+    for (int i = 0; i < arg_sz; i++) {
+        args[i] = (pid_t)atoi(argv[i + 2]);
+         if(isParentIdBelongsToRoot(args[i],root))
+            {
+                printf("Parent of process %d is %d\n",args[i],getParentid(args[i]));
+            }else
+            {
+		printf("Process %d doesn't belong to the root %d",args[i],root);
+}
+
+    }
+    
+    //getZC(dda,processIDs, args,dda_sz, pr_sz, arg_sz);
+     //getND(processIDs, args, pr_sz, arg_sz);
+     if (strcmp(option, "-nd") == 0) {
+        // List the PIDs of all non-direct descendants of process_id1 (only)
+        getND(processIDs, args, pr_sz, arg_sz);
+    } else if (strcmp(option, "-dd") == 0) {
+        // List the PIDs of all immediate descendants of process_id1
+        getDD(dda,processIDs, args, dda_sz,pr_sz, arg_sz);
+    } else if (strcmp(option, "-sb") == 0) {
+        // List the PIDs of all sibling processes of process_id1
+        getSB(sba,processIDs, args,sba_sz, pr_sz, arg_sz);
+    } else if (strcmp(option, "-sz") == 0) {
+        // List the PIDs of all sibling processes of process_id1 that are defunct
+        getSZ(sba,processIDs, args,sba_sz, pr_sz, arg_sz);
+    } else if (strcmp(option, "-gc") == 0) {
+        // List the PIDs of all grandchildren of process_id1
+        getGC(processIDs, args, pr_sz, arg_sz);
+    } else if (strcmp(option, "-zz") == 0) {
+        // Print the status of process_id1 (Defunct/Not Defunct)
+        for (int i = 0; i < arg_sz; i++) {
+            getStatus(args[i]);
+        }
+    } else if (strcmp(option, "-zc") == 0) {
+        // List the PIDs of all direct descendants of process_id1 that are currently in the defunct state
+        getZC(dda,processIDs, args,dda_sz, pr_sz, arg_sz);
+    } else {
+    //checks for invalid option
+        printf("Invalid option: %s\n", option);
+        return 1;
+    }
+
+    free(args);
+    return 0;
+  
+}
